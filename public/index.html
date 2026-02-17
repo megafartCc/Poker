@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Poker Arena</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div>
+        <h1>Poker Arena</h1>
+        <p class="subtitle">Play 1v1 against your bot</p>
+      </div>
+      <div class="status">
+        <span id="healthDot" class="dot offline"></span>
+        <span id="healthText">Connecting...</span>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel left">
+        <h2>Session</h2>
+        <div class="controls">
+          <label>
+            Your Seat
+            <select id="seatSelect">
+              <option value="0">Seat 0</option>
+              <option value="1">Seat 1</option>
+            </select>
+          </label>
+          <button id="startBtn">Start Session</button>
+          <button id="nextBtn" class="ghost" disabled>Next Hand</button>
+        </div>
+
+        <div class="kv">
+          <div>Session ID</div><div id="sessionId" class="mono">-</div>
+          <div>Hand #</div><div id="handIndex">-</div>
+          <div>Street</div><div id="street">-</div>
+          <div>Pot</div><div id="pot">-</div>
+          <div>To Call</div><div id="toCall">-</div>
+          <div>Stacks</div><div id="stacks" class="mono">-</div>
+        </div>
+
+        <h3>Actions</h3>
+        <div id="actions" class="actions"></div>
+      </section>
+
+      <section class="table-wrap">
+        <div class="table">
+          <div class="seat seat-top">
+            <div class="name">BOT</div>
+            <div id="botCards" class="cards"></div>
+          </div>
+
+          <div class="board-area">
+            <div class="label">Board</div>
+            <div id="boardCards" class="cards board"></div>
+            <div class="potline">
+              <span>Pot:</span>
+              <strong id="potCenter">0</strong>
+            </div>
+          </div>
+
+          <div class="seat seat-bottom">
+            <div class="name">YOU</div>
+            <div id="heroCards" class="cards"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel right">
+        <h2>Score</h2>
+        <div id="scoreLine" class="score">W-L-T 0-0-0 | Net +0.00</div>
+
+        <h3>Action History</h3>
+        <div id="history" class="history mono">-</div>
+
+        <h3>Event Log</h3>
+        <div id="log" class="log mono"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/config.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
