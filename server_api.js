@@ -181,6 +181,29 @@ function legalActions(state) {
   return actions;
 }
 
+function actionTargetTotal(state, action) {
+  const p = state.playerToAct;
+  switch (action) {
+    case kAction.Fold:
+    case kAction.Check:
+      return state.committed[p];
+    case kAction.Call:
+      return state.committed[p] + Math.min(state.stack[p], Math.max(0, state.currentBet - state.committed[p]));
+    case kAction.BetHalfPot:
+      return betTargetTotal(state, p, 0.5);
+    case kAction.BetPot:
+      return betTargetTotal(state, p, 1.0);
+    case kAction.RaiseHalfPot:
+      return raiseTargetTotal(state, p, 0.5);
+    case kAction.RaisePot:
+      return raiseTargetTotal(state, p, 1.0);
+    case kAction.AllIn:
+      return state.committed[p] + state.stack[p];
+    default:
+      return state.committed[p];
+  }
+}
+
 function commitTo(state, player, target) {
   const needed = Math.max(0, target - state.committed[player]);
   const pay = Math.min(needed, state.stack[player]);
@@ -355,11 +378,18 @@ function makeSession(humanSeat) {
 }
 
 function buildPayload(sess, botActions = [], terminal = false, result = null) {
+  const awaitingHuman = sess.awaiting === "human" && !terminal;
+  const legalDetail = awaitingHuman ? legalActions(sess.state).map((a) => ({
+    type: actionNames[a],
+    size: Number(actionTargetTotal(sess.state, a).toFixed(2)),
+    index: a,
+  })) : [];
   return {
     ok: true,
     session_id: sess.id,
     hand_index: sess.handIndex,
-    awaiting_human_action: sess.awaiting === "human" && !terminal,
+    awaiting_human_action: awaitingHuman,
+    legal_actions: legalDetail,
     bot_actions: botActions,
     state: terminal
       ? null
@@ -480,4 +510,3 @@ app.listen(PORT, () => {
   console.log(`Buckets: ${BUCKETS_PATH}`);
   console.log(`Policies: flop=${POLICY_FLOP} turn=${POLICY_TURN} river=${POLICY_RIVER}`);
 });
-
