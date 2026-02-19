@@ -333,7 +333,7 @@ function sampleActionFromPolicy(legal, infoset, policyMap) {
 // ---------- Session handling ----------
 const sessions = new Map();
 
-function newState(street) {
+function newState(street, humanSeat) {
   const bucket_p0 = sampleBucket(street);
   const bucket_p1 = sampleBucket(street);
   const start_pot = street === "flop" ? 90 + Math.random() * 40 : 100 + Math.random() * 60;
@@ -353,14 +353,14 @@ function newState(street) {
     terminal: false,
     winner: -1,
     history: "",
-    playerToAct: 0,
+    playerToAct: humanSeat, // human acts first if chosen seat
   };
 }
 
 function makeSession(humanSeat) {
   const id = crypto.randomUUID();
   const street = "flop"; // single street UI
-  const state = newState(street);
+  const state = newState(street, humanSeat);
   const cards = cardDeck(2 + 3);
   const s = {
     id,
@@ -371,14 +371,13 @@ function makeSession(humanSeat) {
     state,
     board: cards.slice(2),
     hero: cards.slice(0, 2),
-    awaiting: "human",
   };
   sessions.set(id, s);
   return s;
 }
 
 function buildPayload(sess, botActions = [], terminal = false, result = null) {
-  const awaitingHuman = sess.awaiting === "human" && !terminal;
+  const awaitingHuman = !terminal && sess.state.playerToAct === sess.humanSeat && !sess.state.terminal;
   const legalDetail = awaitingHuman ? legalActions(sess.state).map((a) => ({
     type: actionNames[a],
     size: Number(actionTargetTotal(sess.state, a).toFixed(2)),
@@ -410,11 +409,10 @@ function buildPayload(sess, botActions = [], terminal = false, result = null) {
 
 function dealNewHand(sess) {
   sess.handIndex += 1;
-  sess.state = newState(sess.street);
+  sess.state = newState(sess.street, sess.humanSeat);
   const cards = cardDeck(5);
   sess.hero = cards.slice(0, 2);
   sess.board = cards.slice(2);
-  sess.awaiting = "human";
   return buildPayload(sess, [], false, null);
 }
 
@@ -486,7 +484,6 @@ app.post("/api/action", (req, res) => {
   }
   // apply human action
   applyAction(sess.state, legal[idx]);
-  sess.awaiting = "bot";
   if (sess.state.terminal) {
     const util0 = terminalUtility(sess.state);
     const human_ev = sess.humanSeat === 0 ? util0 : -util0;
