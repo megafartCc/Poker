@@ -167,7 +167,7 @@ function App() {
     }
   };
 
-  const stacks = useMemo(() => session.state?.stacks || session.state?.stacks || session.state?.stacks || session.state?.stacks || session.state?.stacks || [], [session.state]);
+  const stacks = useMemo(() => session.state?.stacks || [], [session.state]);
   const board = session.state?.board || [];
   const hero = session.state?.your_hand || [];
   const actions = session.awaiting_human_action ? session.legal_actions || [] : [];
@@ -180,7 +180,7 @@ function App() {
         <header className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-display font-bold tracking-tight">Poker Arena</h1>
-            <p className="text-slate-400">Full-game heads-up beta (preflop + blinds)</p>
+            <p className="text-slate-400">Full-game HU (blinds + preflop→river, solver-backed)</p>
           </div>
           <div className="flex items-center gap-3 text-sm">
             <span
@@ -224,7 +224,7 @@ function App() {
                 disabled={busy}
               >
                 <option value={2}>2 (HU)</option>
-                <option value={6}>6 (coming soon UI)</option>
+                <option value={6}>6 (UI still HU, backend supports)</option>
               </select>
               <button
                 onClick={startSession}
@@ -247,13 +247,15 @@ function App() {
               <div className="font-mono text-slate-200 break-all">{session.session_id || "-"}</div>
               <div className="grid grid-cols-2 gap-y-1 text-slate-300">
                 <span className="text-slate-400">Street</span>
-                <span>{street}</span>
+                <span className="capitalize">{street}</span>
                 <span className="text-slate-400">Pot</span>
                 <span>{formatMoney(session.state?.pot)}</span>
                 <span className="text-slate-400">To Call</span>
                 <span>{formatMoney(toCall)}</span>
                 <span className="text-slate-400">Stacks</span>
                 <span className="font-mono">{JSON.stringify(stacks)}</span>
+                <span className="text-slate-400">Board</span>
+                <span className="font-mono">{board.join(" ") || "-"}</span>
               </div>
             </div>
 
@@ -278,24 +280,31 @@ function App() {
           {/* Center table */}
           <div className="glass rounded-2xl p-4 lg:p-6">
             <div className="bg-gradient-to-b from-table to-table-felt rounded-2xl border border-emerald-900/70 shadow-inner px-6 py-5 min-h-[420px] flex flex-col gap-6 items-center">
-              <div className="text-sm uppercase tracking-wide text-emerald-100 font-semibold">BOT</div>
-              <div className="flex gap-3">
-                <Card hidden card="??" />
-                <Card hidden card="??" />
+              <div className="w-full flex items-center justify-between text-sm text-emerald-100">
+                <span className="font-semibold">Button: {humanSeat === 0 ? "Bot" : "You"}</span>
+                <span>Street: <span className="capitalize">{street}</span></span>
               </div>
-
-              <div className="flex flex-col items-center gap-3">
-                <div className="text-xs uppercase tracking-wide text-emerald-50/80">Board</div>
-                <div className="flex gap-3">{board.map((c, idx) => <Card key={idx} card={c} />)}</div>
-              </div>
-
-              <div className="text-lg font-semibold text-emerald-100">
-                Pot: <span className="text-emerald-300">{formatMoney(session.state?.pot)}</span>
-              </div>
-
-              <div className="flex flex-col items-center gap-3">
-                <div className="text-xs uppercase tracking-wide text-emerald-50/80">You</div>
-                <div className="flex gap-3">{hero.map((c, idx) => <Card key={idx} card={c} />)}</div>
+              <div className="flex items-start justify-between w-full">
+                <div className="flex flex-col items-center gap-2">
+                  <div className="text-xs uppercase tracking-wide text-emerald-50/80">Bot (hidden)</div>
+                  <div className="flex gap-2">
+                    <Card hidden card="??" />
+                    <Card hidden card="??" />
+                  </div>
+                  <div className="text-xs text-emerald-200">Stack: {formatMoney(stacks[1] ?? "-")}</div>
+                </div>
+                <div className="flex flex-col items-center gap-2">
+                  <div className="text-xs uppercase tracking-wide text-emerald-50/80">Board</div>
+                  <div className="flex gap-2">{board.map((c, idx) => <Card key={idx} card={c} />)}</div>
+                  <div className="text-lg font-semibold text-emerald-100">
+                    Pot: <span className="text-emerald-300">{formatMoney(session.state?.pot)}</span>
+                  </div>
+                </div>
+                <div className="flex flex-col items-center gap-2">
+                  <div className="text-xs uppercase tracking-wide text-emerald-50/80">You</div>
+                  <div className="flex gap-2">{hero.map((c, idx) => <Card key={idx} card={c} />)}</div>
+                  <div className="text-xs text-emerald-200">Stack: {formatMoney(stacks[0] ?? "-")}</div>
+                </div>
               </div>
             </div>
           </div>
