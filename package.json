@@ -10,14 +10,20 @@
     "build": "vite build",
     "preview": "vite preview",
     "start": "node server.cjs",
+    "start:fullgame:cpp": "powershell -ExecutionPolicy Bypass -File ./scripts/start_server_cpp.ps1",
+    "train:cpp:model": "powershell -ExecutionPolicy Bypass -File ./scripts/run_cpp_model_pipeline.ps1",
+    "train:blueprint:v1:js-experimental": "node ./scripts/train_blueprint_v1_postflop.cjs",
+    "battery": "node ./scripts/opponent_battery.cjs",
     "postinstall": "npm run build"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
+    "@letele/playing-cards": "^0.1.0",
     "@vitejs/plugin-react": "^5.0.0",
     "express": "^4.21.2",
+    "poker-evaluator": "^2.1.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwindcss": "^3.4.4"

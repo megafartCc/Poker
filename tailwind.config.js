@@ -4,8 +4,8 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        display: ["'Inter Tight'", "Inter", "system-ui", "sans-serif"],
-        body: ["Inter", "system-ui", "sans-serif"],
+        display: ["'Bricolage Grotesque'", "'Space Grotesk'", "system-ui", "sans-serif"],
+        body: ["'Space Grotesk'", "system-ui", "sans-serif"],
         mono: ["'IBM Plex Mono'", "ui-monospace", "SFMono-Regular", "monospace"],
       },
       colors: {

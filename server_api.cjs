@@ -23,6 +23,9 @@ const POLICY_FLOP = process.env.POLICY_FLOP || "C:/out/buckets/models/v2_potguar
 const POLICY_TURN = process.env.POLICY_TURN || "C:/out/buckets/models/v2_potguard/mccfr_turn.best.tsv";
 const POLICY_RIVER = process.env.POLICY_RIVER || "C:/out/buckets/models/v2_potguard/mccfr_river.best.tsv";
 const MAX_RAISES = Number(process.env.MAX_RAISES || 2);
+const START_STACK = Number(process.env.START_STACK || 200);
+const SMALL_BLIND = Number(process.env.SMALL_BLIND || 1);
+const BIG_BLIND = Number(process.env.BIG_BLIND || 2);
 
 const kAction = {
   Fold: 0,
@@ -45,6 +48,7 @@ const actionNames = [
   "ALL_IN",
 ];
 const actionSymbols = ["f", "k", "c", "b", "B", "r", "R", "a"];
+const streets = ["preflop", "flop", "turn", "river"];
 
 // ---------- Loading utilities ----------
 function readJson(p) {
@@ -248,20 +252,14 @@ function applyAction(state, action) {
     case kAction.Check:
       if (toCall > eps) throw new Error("Check illegal facing bet");
       state.consecutiveChecks += 1;
-      if (state.consecutiveChecks >= 2) {
-        state.terminal = true;
-        state.winner = -1;
-      } else {
-        state.playerToAct = o;
-      }
+      state.playerToAct = o;
       return state;
     case kAction.Call: {
       if (toCall <= eps) throw new Error("Call illegal when to_call=0");
       const target = state.committed[p] + Math.min(state.stack[p], toCall);
       commitTo(state, p, target);
       state.consecutiveChecks = 0;
-      state.terminal = true;
-      state.winner = -1;
+      state.playerToAct = o;
       return state;
     }
     case kAction.BetHalfPot:
@@ -365,32 +363,34 @@ const sessions = new Map();
 function newState(street, humanSeat) {
   const bucket_p0 = sampleBucket(street);
   const bucket_p1 = sampleBucket(street);
-  const start_pot = street === "flop" ? 90 + Math.random() * 40 : 100 + Math.random() * 60;
-  const eff_stack = start_pot * 3;
+  // blinds: sb=1, bb=2
+  const sb = 1.0;
+  const bb = 2.0;
+  const eff_stack = 200.0;
   return {
     street,
     bucket_p0,
     bucket_p1,
     hs_p0: 0.5 + (Math.random() - 0.5) * 0.2,
     hs_p1: 0.5 + (Math.random() - 0.5) * 0.2,
-    pot: start_pot,
-    currentBet: 0,
-    committed: [0, 0],
-    stack: [eff_stack, eff_stack],
+    pot: sb + bb,
+    currentBet: bb,
+    committed: [humanSeat === 0 ? sb : bb, humanSeat === 0 ? bb : sb],
+    stack: [eff_stack - (humanSeat === 0 ? sb : bb), eff_stack - (humanSeat === 0 ? bb : sb)],
     raises: 0,
     consecutiveChecks: 0,
     terminal: false,
     winner: -1,
     history: "",
-    playerToAct: humanSeat, // human acts first if chosen seat
+    playerToAct: humanSeat === 0 ? 0 : 1, // BB acts last preflop, SB first
   };
 }
 
 function makeSession(humanSeat) {
   const id = crypto.randomUUID();
-  const street = "flop"; // single street UI
+  const street = "preflop";
   const state = newState(street, humanSeat);
-  const cards = cardDeck(2 + 3);
+  const cards = cardDeck(2 + 5);
   const s = {
     id,
     humanSeat,
@@ -398,8 +398,10 @@ function makeSession(humanSeat) {
     handIndex: 0,
     score: { wins: 0, losses: 0, ties: 0, net: 0 },
     state,
-    board: cards.slice(2),
+    board: [],
     hero: cards.slice(0, 2),
+    villain_hole: [cards[2], cards[3]],
+    full_board: cards.slice(4),
   };
   sessions.set(id, s);
   return s;
@@ -438,23 +440,36 @@ function buildPayload(sess, botActions = [], terminal = false, result = null) {
 
 function dealNewHand(sess) {
   sess.handIndex += 1;
+  sess.street = "preflop";
   sess.state = newState(sess.street, sess.humanSeat);
-  const cards = cardDeck(5);
+  const cards = cardDeck(7);
   sess.hero = cards.slice(0, 2);
-  sess.board = cards.slice(2);
+  sess.villain_hole = [cards[2], cards[3]];
+  sess.full_board = cards.slice(4);
+  sess.board = [];
   return buildPayload(sess, [], false, null);
 }
 
 function botPlay(sess) {
   const s = sess.state;
-  const policy = policyMaps[sess.street];
+  const policy = sess.street === "flop" ? policyMaps.flop : sess.street === "turn" ? policyMaps.turn : sess.street === "river" ? policyMaps.river : null;
   const botSeat = 1 - sess.humanSeat;
   const actions = [];
   while (!s.terminal && s.playerToAct !== sess.humanSeat) {
-    const equityBot = botSeat === 0 ? s.hs_p0 : s.hs_p1;
-    const legal = removeDominatedFolds(legalActions(s), s, equityBot);
-    const infoset = infosetKey(s, sess.street);
-    const act = sampleActionFromPolicy(legal, infoset, policy);
+    let legal = legalActions(s);
+    // preflop heuristic if no policy
+    let act = null;
+    if (!policy || sess.street === "preflop") {
+      const toCall = Math.max(0, s.currentBet - s.committed[s.playerToAct]);
+      if (toCall <= 0.5) act = kAction.Check;
+      else if (toCall < s.pot * 0.5) act = kAction.Call;
+      else act = (Math.random() < 0.25 ? kAction.AllIn : kAction.Fold);
+    } else {
+      const equityBot = botSeat === 0 ? s.hs_p0 : s.hs_p1;
+      legal = removeDominatedFolds(legal, s, equityBot);
+      const infoset = infosetKey(s, sess.street);
+      act = sampleActionFromPolicy(legal, infoset, policy);
+    }
     actions.push({
       seat: botSeat,
       street: sess.street,
@@ -467,6 +482,17 @@ function botPlay(sess) {
       action: { type: actionNames[act] },
     });
     applyAction(s, act);
+    // advance street if both checked/called and street not river
+    if (!s.terminal && s.consecutiveChecks >= 2 || (s.currentBet <= kEps && s.raises == 0 && sess.street !== "preflop" && legal.length === 1)) {
+      // handled in applyAction for checks
+    }
+    if (!s.terminal && s.playerToAct === sess.humanSeat && s.currentBet <= kEps && s.raises == 0 && s.consecutiveChecks >= 1) {
+      // human turn reached with check-check potential; break to human
+      break;
+    }
+    if (!s.terminal && s.consecutiveChecks >= 2) {
+      advanceStreet(sess);
+    }
   }
   let result = null;
   let terminal = s.terminal;

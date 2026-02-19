@@ -1,70 +1,66 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import * as cardDeck from "@letele/playing-cards/dist/index.esm.js";
 
-const formatMoney = (v) => (v == null ? "-" : Number(v).toFixed(2));
+const ACTION_TYPES = {
+  FOLD: "FOLD",
+  CHECK: "CHECK",
+  CALL: "CALL",
+  BET_HALF_POT: "BET_HALF_POT",
+  BET_POT: "BET_POT",
+  RAISE_HALF_POT: "RAISE_HALF_POT",
+  RAISE_POT: "RAISE_POT",
+  ALL_IN: "ALL_IN",
+};
 
 const defaultSession = {
   session_id: "",
   hand_index: 0,
   awaiting_human_action: false,
   legal_actions: [],
+  bot_actions: [],
   state: null,
+  showdown: null,
   terminal: false,
   result: null,
   score: { wins: 0, losses: 0, ties: 0, net: 0 },
-  seats: 2,
 };
 
-const Card = ({ card, hidden }) => {
-  if (hidden) {
-    return (
-      <img
-        className="card-img"
-        src="https://deckofcardsapi.com/static/img/back.png"
-        alt="card back"
-      />
-    );
-  }
-  if (!card) return null;
-  const rank = card[0].toUpperCase() === "T" ? "0" : card[0].toUpperCase();
-  const suit = card[1]?.toUpperCase() ?? "S";
-  const src = `https://deckofcardsapi.com/static/img/${rank}${suit}.png`;
-  return (
-    <img
-      className="card-img"
-      src={src}
-      alt={card}
-      onError={(e) => {
-        e.currentTarget.replaceWith(
-          Object.assign(document.createElement("div"), {
-            className: "h-16 w-12 rounded-md bg-slate-800 grid place-items-center text-xs font-mono",
-            textContent: card,
-          })
-        );
-      }}
-    />
-  );
-};
+function formatMoney(v) {
+  if (v == null || Number.isNaN(Number(v))) return "-";
+  return Number(v).toFixed(2);
+}
 
-const ActionButton = ({ action, onClick, disabled }) => {
-  const label = action.size != null ? `${action.type} (${formatMoney(action.size)})` : action.type;
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className="w-full text-left px-3 py-2 rounded-lg bg-emerald-600/90 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-semibold shadow"
-    >
-      {label}
-    </button>
-  );
-};
+function toDeckKey(card) {
+  if (!card || String(card).length < 2) return null;
+  const rankRaw = String(card[0] || "").toUpperCase();
+  const suitRaw = String(card[1] || "").toLowerCase();
+  const rankMap = {
+    A: "a",
+    K: "k",
+    Q: "q",
+    J: "j",
+    T: "10",
+    "9": "9",
+    "8": "8",
+    "7": "7",
+    "6": "6",
+    "5": "5",
+    "4": "4",
+    "3": "3",
+    "2": "2",
+  };
+  const suitMap = { s: "S", h: "H", d: "D", c: "C" };
+  const rank = rankMap[rankRaw];
+  const suit = suitMap[suitRaw];
+  if (!rank || !suit) return null;
+  return `${suit}${rank}`;
+}
 
 function useApi() {
-  const request = async (path, options = {}) => {
+  const request = useCallback(async (path, options = {}) => {
     const res = await fetch(path, {
       method: options.method || "GET",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: options.body ? JSON.stringify(options.body) : undefined,
     });
     const data = await res.json().catch(() => ({}));
@@ -73,270 +69,382 @@ function useApi() {
       throw new Error(msg);
     }
     return data;
-  };
+  }, []);
   return { request };
+}
+
+function PlayingCard({ card, hidden = false, delayMs = 0, reveal = false }) {
+  const key = hidden ? "B1" : toDeckKey(card);
+  const CardSvg = cardDeck[key] || cardDeck.B1;
+  const classes = ["playing-card"];
+  if (reveal) classes.push("reveal");
+  if (!card && !hidden) classes.push("is-placeholder");
+  return (
+    <div
+      className={classes.join(" ")}
+      style={{ animationDelay: `${delayMs}ms` }}
+    >
+      <CardSvg className="playing-card-svg" style={{ width: "100%", height: "100%" }} />
+    </div>
+  );
+}
+
+function ResultBanner({ result, onClose }) {
+  if (!result) return null;
+  const win = Number(result.human_payoff || 0) > 0;
+  const lose = Number(result.human_payoff || 0) < 0;
+  return (
+    <div className="result-banner">
+      <div className={`result-chip ${win ? "win" : lose ? "lose" : "tie"}`}>
+        <div className="result-title">{result.label || "Hand Complete"}</div>
+        <div className="result-amount">{Number(result.human_payoff) > 0 ? "+" : ""}{formatMoney(result.human_payoff)}</div>
+      </div>
+      <button className="result-close" onClick={onClose}>Close</button>
+    </div>
+  );
 }
 
 function App() {
   const { request } = useApi();
   const [health, setHealth] = useState("unknown");
-  const [humanSeat, setHumanSeat] = useState(0);
-  const [seats, setSeats] = useState(2);
-  const [session, setSession] = useState(defaultSession);
-  const [log, setLog] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [humanSeat, setHumanSeat] = useState(0);
+  const [session, setSession] = useState(defaultSession);
+  const [eventLog, setEventLog] = useState([]);
+  const [raiseTarget, setRaiseTarget] = useState(0);
+  const [resultBanner, setResultBanner] = useState(null);
 
-  const addLog = (line) => setLog((prev) => [...prev.slice(-200), line]);
+  const addLog = useCallback((line) => {
+    setEventLog((prev) => [...prev.slice(-240), line]);
+  }, []);
 
   useEffect(() => {
-    const check = async () => {
+    let alive = true;
+    const ping = async () => {
       try {
         const h = await request("/api/health");
-        if (h.ok) setHealth("up");
-        else setHealth("down");
+        if (!alive) return;
+        setHealth(h.ok ? "up" : "down");
       } catch {
+        if (!alive) return;
         setHealth("down");
       }
     };
-    check();
-    const id = setInterval(check, 8000);
-    return () => clearInterval(id);
+    ping();
+    const id = setInterval(ping, 7000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
   }, [request]);
 
-  const applyPayload = (p) => {
+  const applyPayload = useCallback((p) => {
     setSession((prev) => ({ ...prev, ...p }));
     if (p.result) {
-      addLog(`${p.result.label} (${formatMoney(p.result.human_payoff)})`);
+      setResultBanner(p.result);
+      addLog(`[RESULT] ${p.result.label} ${formatMoney(p.result.human_payoff)}`);
     }
-    if (p.bot_actions?.length) {
-      p.bot_actions.forEach((ba) => {
-        const hs = ba.hand_strength != null ? ba.hand_strength.toFixed(3) : "n/a";
+    const legal = p.legal_actions || [];
+    const betLike = legal.filter((a) =>
+      [
+        ACTION_TYPES.BET_HALF_POT,
+        ACTION_TYPES.BET_POT,
+        ACTION_TYPES.RAISE_HALF_POT,
+        ACTION_TYPES.RAISE_POT,
+        ACTION_TYPES.ALL_IN,
+      ].includes(a.type)
+    );
+    if (betLike.length) setRaiseTarget(Number(betLike[0].size || 0));
+    if (Array.isArray(p.bot_actions)) {
+      for (const ba of p.bot_actions) {
+        const hs = ba.hand_strength != null ? Number(ba.hand_strength).toFixed(3) : "n/a";
+        const bucket = ba.bucket_id != null ? ba.bucket_id : "?";
+        const key = ba.infoset_key || ba.prior_key || "-";
         addLog(
-          `BOT seat ${ba.seat} | street=${ba.street} | board=${ba.board_class ?? "?"} | bucket=${ba.bucket_id ?? "?"} | hs=${hs} | pot=${ba.pot ?? "?"} | to_call=${ba.to_call ?? "?"} | spr=${ba.spr ?? "?"} | action=${ba.action?.type ?? ""}`
+          `[BOT] ${ba.street || "-"} ${ba.action?.type || "-"} | hs=${hs} | bucket=${bucket} | key=${key} | pot=${formatMoney(ba.pot)}`
         );
-      });
+      }
     }
-  };
+  }, [addLog]);
 
-  const startSession = async () => {
+  const startSession = useCallback(async () => {
     setBusy(true);
     try {
-      const p = await request("/api/new_game", {
+      const payload = await request("/api/new_game", {
         method: "POST",
-        body: { human_seat: humanSeat, seats },
+        body: { human_seat: humanSeat, seats: 2 },
       });
-      setLog([`Session started. You are seat ${humanSeat} / ${seats} seats.`]);
-      applyPayload(p);
+      setEventLog([`Session started. You are seat ${humanSeat} / 2 seats.`]);
+      setResultBanner(null);
+      applyPayload(payload);
     } catch (err) {
-      addLog(`ERROR: ${err.message}`);
+      addLog(`[ERROR] ${err.message}`);
     } finally {
       setBusy(false);
     }
-  };
+  }, [request, humanSeat, addLog, applyPayload]);
 
-  const nextHand = async () => {
+  const nextHand = useCallback(async () => {
     if (!session.session_id) return;
     setBusy(true);
     try {
-      const p = await request("/api/new_hand", {
+      const payload = await request("/api/new_hand", {
         method: "POST",
         body: { session_id: session.session_id },
       });
-      setLog((prev) => [...prev, "---- Next hand ----"]);
-      applyPayload(p);
+      addLog("---- Next hand ----");
+      setResultBanner(null);
+      applyPayload(payload);
     } catch (err) {
-      addLog(`ERROR: ${err.message}`);
+      addLog(`[ERROR] ${err.message}`);
     } finally {
       setBusy(false);
     }
-  };
+  }, [request, session.session_id, addLog, applyPayload]);
 
-  const sendAction = async (idx) => {
+  const sendAction = useCallback(async (actionIndex) => {
     if (!session.session_id) return;
     setBusy(true);
     try {
-      const p = await request("/api/action", {
+      const payload = await request("/api/action", {
         method: "POST",
-        body: { session_id: session.session_id, action_index: idx },
+        body: { session_id: session.session_id, action_index: actionIndex },
       });
-      applyPayload(p);
+      applyPayload(payload);
     } catch (err) {
-      addLog(`ERROR: ${err.message}`);
+      addLog(`[ERROR] ${err.message}`);
     } finally {
       setBusy(false);
     }
+  }, [request, session.session_id, addLog, applyPayload]);
+
+  const actions = session.awaiting_human_action ? (session.legal_actions || []) : [];
+  const stacks = session.state?.stacks || [];
+  const board = session.state?.board || [];
+  const heroHand = session.state?.your_hand || [];
+  const revealedBotHand = session.showdown?.bot_hand || session.state?.bot_hand || [];
+  const showBotCards = Boolean(session.terminal && revealedBotHand.length === 2);
+  const street = session.state?.street || "-";
+  const pot = Number(session.state?.pot || 0);
+  const toCall = Number(session.state?.to_call || 0);
+  const actionHistory = session.state?.action_history || [];
+  const boardSlots = useMemo(() => [0, 1, 2, 3, 4].map((i) => board[i] || null), [board]);
+
+  const botSeat = 1 - humanSeat;
+  const heroStack = stacks[humanSeat];
+  const botStack = stacks[botSeat];
+
+  const actionIndexByType = useMemo(() => {
+    const map = {};
+    actions.forEach((a, idx) => {
+      map[a.type] = idx;
+    });
+    return map;
+  }, [actions]);
+
+  const doType = (type) => {
+    const idx = actionIndexByType[type];
+    if (idx == null) return;
+    sendAction(idx);
   };
 
-  const stacks = useMemo(() => session.state?.stacks || [], [session.state]);
-  const board = session.state?.board || [];
-  const hero = session.state?.your_hand || [];
-  const actions = session.awaiting_human_action ? session.legal_actions || [] : [];
-  const street = session.state?.street ?? "-";
-  const toCall = session.state?.to_call;
+  const betActions = useMemo(() => {
+    return actions
+      .map((a, idx) => ({ ...a, idx }))
+      .filter((a) =>
+        [
+          ACTION_TYPES.BET_HALF_POT,
+          ACTION_TYPES.BET_POT,
+          ACTION_TYPES.RAISE_HALF_POT,
+          ACTION_TYPES.RAISE_POT,
+          ACTION_TYPES.ALL_IN,
+        ].includes(a.type)
+      );
+  }, [actions]);
+
+  const betMin = betActions.length ? Math.max(1, Math.min(...betActions.map((a) => Number(a.size || 0)))) : 1;
+  const betMax = betActions.length ? Math.max(1, Math.max(...betActions.map((a) => Number(a.size || 0)))) : 1;
+
+  const sendClosestBet = () => {
+    if (!betActions.length) return;
+    let best = betActions[0];
+    let bestDiff = Math.abs(Number(best.size || 0) - raiseTarget);
+    for (const a of betActions) {
+      const d = Math.abs(Number(a.size || 0) - raiseTarget);
+      if (d < bestDiff) {
+        best = a;
+        bestDiff = d;
+      }
+    }
+    sendAction(best.idx);
+  };
+
+  const canFold = actionIndexByType[ACTION_TYPES.FOLD] != null;
+  const canCheck = actionIndexByType[ACTION_TYPES.CHECK] != null;
+  const canCall = actionIndexByType[ACTION_TYPES.CALL] != null;
+  const canAllIn = actionIndexByType[ACTION_TYPES.ALL_IN] != null;
 
   return (
-    <div className="min-h-screen px-4 py-6 md:px-8 lg:px-12">
-      <div className="max-w-7xl mx-auto space-y-6">
-        <header className="flex items-center justify-between">
+    <div className="app-shell">
+      <div className="app-backdrop" />
+      <div className="app-wrap">
+        <header className="topbar">
           <div>
-            <h1 className="text-3xl font-display font-bold tracking-tight">Poker Arena</h1>
-            <p className="text-slate-400">Full-game HU (blinds + preflop→river, solver-backed)</p>
+            <div className="eyebrow">Heads-Up Engine Test</div>
+            <h1 className="title">Poker Arena Pro Table</h1>
           </div>
-          <div className="flex items-center gap-3 text-sm">
-            <span
-              className={`inline-flex items-center gap-2 px-3 py-1 rounded-full ${
-                health === "up" ? "bg-emerald-900/60 text-emerald-200" : "bg-rose-900/60 text-rose-200"
-              }`}
-            >
-              <span
-                className={`h-2.5 w-2.5 rounded-full ${
-                  health === "up" ? "bg-emerald-400 shadow-[0_0_0_6px_rgba(16,185,129,0.25)]" : "bg-rose-400"
-                }`}
-              />
-              Bot API {health === "up" ? "connected" : "offline"}
-            </span>
+          <div className={`health-pill ${health === "up" ? "online" : "offline"}`}>
+            <span className="dot" />
+            Bot API {health === "up" ? "online" : "offline"}
           </div>
         </header>
 
-        <div className="grid lg:grid-cols-[320px,1fr,320px] gap-5">
-          {/* Left panel */}
-          <div className="glass rounded-2xl p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Session</h2>
-              <span className="text-xs text-slate-400">hand #{session.hand_index ?? 0}</span>
-            </div>
-            <div className="space-y-3">
-              <label className="text-xs uppercase tracking-wide text-slate-400">Your Seat</label>
-              <select
-                className="w-full bg-slate-800/80 border border-white/5 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                value={humanSeat}
-                onChange={(e) => setHumanSeat(Number(e.target.value))}
-                disabled={busy}
-              >
-                <option value={0}>Seat 0 (SB preflop, acts first)</option>
-                <option value={1}>Seat 1 (BB preflop)</option>
+        <div className="layout-grid">
+          <aside className="side-panel left">
+            <div className="panel-block">
+              <h2>Session Control</h2>
+              <label>Your Seat</label>
+              <select value={humanSeat} onChange={(e) => setHumanSeat(Number(e.target.value))}>
+                <option value={0}>Seat 0 (SB)</option>
+                <option value={1}>Seat 1 (BB)</option>
               </select>
-              <label className="text-xs uppercase tracking-wide text-slate-400">Seats</label>
-              <select
-                className="w-full bg-slate-800/80 border border-white/5 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                value={seats}
-                onChange={(e) => setSeats(Number(e.target.value))}
-                disabled={busy}
-              >
-                <option value={2}>2 (HU)</option>
-                <option value={6}>6 (UI still HU, backend supports)</option>
-              </select>
-              <button
-                onClick={startSession}
-                disabled={busy}
-                className="w-full h-10 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-semibold shadow disabled:opacity-50"
-              >
-                Start Session
-              </button>
-              <button
-                onClick={nextHand}
-                disabled={!session.session_id || busy}
-                className="w-full h-10 rounded-lg bg-slate-700 hover:bg-slate-600 font-semibold shadow disabled:opacity-50"
-              >
-                Next Hand
-              </button>
-            </div>
-
-            <div className="text-sm space-y-1 pt-2">
-              <div className="text-slate-400">Session ID</div>
-              <div className="font-mono text-slate-200 break-all">{session.session_id || "-"}</div>
-              <div className="grid grid-cols-2 gap-y-1 text-slate-300">
-                <span className="text-slate-400">Street</span>
-                <span className="capitalize">{street}</span>
-                <span className="text-slate-400">Pot</span>
-                <span>{formatMoney(session.state?.pot)}</span>
-                <span className="text-slate-400">To Call</span>
-                <span>{formatMoney(toCall)}</span>
-                <span className="text-slate-400">Stacks</span>
-                <span className="font-mono">{JSON.stringify(stacks)}</span>
-                <span className="text-slate-400">Board</span>
-                <span className="font-mono">{board.join(" ") || "-"}</span>
+              <div className="btn-row">
+                <button disabled={busy} onClick={startSession} className="btn strong">Start Session</button>
+                <button disabled={busy || !session.session_id} onClick={nextHand} className="btn">Next Hand</button>
               </div>
             </div>
 
-            <div className="pt-2">
-              <h3 className="text-sm font-semibold mb-2">Actions</h3>
-              <div className="space-y-2">
-                {actions.length === 0 && (
-                  <div className="text-xs text-slate-500">Waiting for bot or terminal.</div>
-                )}
-                {actions.map((a, i) => (
-                  <ActionButton
-                    key={`${a.type}-${i}`}
-                    action={a}
-                    onClick={() => sendAction(i)}
-                    disabled={busy || !session.awaiting_human_action}
+            <div className="panel-block">
+              <h3>Live Hand</h3>
+              <div className="kv"><span>Hand</span><strong>#{session.hand_index ?? 0}</strong></div>
+              <div className="kv"><span>Street</span><strong>{street}</strong></div>
+              <div className="kv"><span>Pot</span><strong>{formatMoney(pot)}</strong></div>
+              <div className="kv"><span>To Call</span><strong>{formatMoney(toCall)}</strong></div>
+              <div className="kv"><span>Session</span><strong className="mono">{session.session_id || "-"}</strong></div>
+            </div>
+
+            <div className="panel-block">
+              <h3>Score</h3>
+              <div className="score-line">
+                W-L-T {session.score?.wins || 0}-{session.score?.losses || 0}-{session.score?.ties || 0}
+              </div>
+              <div className="score-net">Net {formatMoney(session.score?.net || 0)}</div>
+            </div>
+          </aside>
+
+          <main className="table-panel">
+            <ResultBanner result={resultBanner} onClose={() => setResultBanner(null)} />
+            <div className="table-surface">
+              <div className="table-ring" />
+              <div className="seat bot-seat">
+                <div className="seat-head">BOT (Seat {botSeat})</div>
+                <div className="cards-row">
+                  <PlayingCard
+                    card={showBotCards ? revealedBotHand[0] : null}
+                    hidden={!showBotCards}
+                    delayMs={80}
+                    reveal={showBotCards}
                   />
-                ))}
+                  <PlayingCard
+                    card={showBotCards ? revealedBotHand[1] : null}
+                    hidden={!showBotCards}
+                    delayMs={130}
+                    reveal={showBotCards}
+                  />
+                </div>
+                <div className="seat-stack">Stack {formatMoney(botStack)}</div>
               </div>
-            </div>
-          </div>
 
-          {/* Center table */}
-          <div className="glass rounded-2xl p-4 lg:p-6">
-            <div className="bg-gradient-to-b from-table to-table-felt rounded-2xl border border-emerald-900/70 shadow-inner px-6 py-5 min-h-[420px] flex flex-col gap-6 items-center">
-              <div className="w-full flex items-center justify-between text-sm text-emerald-100">
-                <span className="font-semibold">Button: {humanSeat === 0 ? "Bot" : "You"}</span>
-                <span>Street: <span className="capitalize">{street}</span></span>
-              </div>
-              <div className="flex items-start justify-between w-full">
-                <div className="flex flex-col items-center gap-2">
-                  <div className="text-xs uppercase tracking-wide text-emerald-50/80">Bot (hidden)</div>
-                  <div className="flex gap-2">
-                    <Card hidden card="??" />
-                    <Card hidden card="??" />
-                  </div>
-                  <div className="text-xs text-emerald-200">Stack: {formatMoney(stacks[1] ?? "-")}</div>
-                </div>
-                <div className="flex flex-col items-center gap-2">
-                  <div className="text-xs uppercase tracking-wide text-emerald-50/80">Board</div>
-                  <div className="flex gap-2">{board.map((c, idx) => <Card key={idx} card={c} />)}</div>
-                  <div className="text-lg font-semibold text-emerald-100">
-                    Pot: <span className="text-emerald-300">{formatMoney(session.state?.pot)}</span>
-                  </div>
-                </div>
-                <div className="flex flex-col items-center gap-2">
-                  <div className="text-xs uppercase tracking-wide text-emerald-50/80">You</div>
-                  <div className="flex gap-2">{hero.map((c, idx) => <Card key={idx} card={c} />)}</div>
-                  <div className="text-xs text-emerald-200">Stack: {formatMoney(stacks[0] ?? "-")}</div>
+              <div className="board-zone">
+                <div className="street-chip">{street.toUpperCase()}</div>
+                <div className="pot-chip">Pot {formatMoney(pot)}</div>
+                <div className="cards-row board">
+                  {boardSlots.map((boardCard, i) => (
+                    <PlayingCard
+                      key={`${session.hand_index}-${i}-${boardCard || "x"}`}
+                      card={boardCard}
+                      hidden={!boardCard}
+                      delayMs={150 + i * 55}
+                      reveal={Boolean(boardCard)}
+                    />
+                  ))}
                 </div>
               </div>
-            </div>
-          </div>
 
-          {/* Right panel */}
-          <div className="glass rounded-2xl p-5 space-y-4">
-            <div>
-              <h2 className="text-lg font-semibold">Score</h2>
-              <div className="mt-2 rounded-xl bg-slate-800/60 px-3 py-2 font-mono text-sm">
-                W-L-T {session.score.wins}-{session.score.losses}-{session.score.ties} | Net{" "}
-                {session.score.net >= 0 ? "+" : ""}
-                {formatMoney(session.score.net)}
+              <div className="seat hero-seat">
+                <div className="cards-row">
+                  <PlayingCard card={heroHand[0]} hidden={!heroHand[0]} delayMs={60} reveal={Boolean(heroHand[0])} />
+                  <PlayingCard card={heroHand[1]} hidden={!heroHand[1]} delayMs={105} reveal={Boolean(heroHand[1])} />
+                </div>
+                <div className="seat-head">YOU (Seat {humanSeat})</div>
+                <div className="seat-stack">Stack {formatMoney(heroStack)}</div>
               </div>
             </div>
 
-            <div>
-              <h3 className="text-sm font-semibold mb-2">Action History</h3>
-              <div className="h-24 rounded-xl bg-slate-800/60 px-3 py-2 font-mono text-xs text-slate-300 overflow-auto scroll-thin">
-                {session.state?.action_history?.join(" ") || "-"}
+            <div className="action-dock">
+              <div className="action-meta">
+                {session.awaiting_human_action ? "Your action" : session.terminal ? "Hand complete" : "Waiting for bot action"}
+              </div>
+              <div className="action-row">
+                <button
+                  disabled={busy || !canFold || !session.awaiting_human_action}
+                  onClick={() => doType(ACTION_TYPES.FOLD)}
+                  className="act fold"
+                >
+                  Fold
+                </button>
+                <button
+                  disabled={busy || !(canCheck || canCall) || !session.awaiting_human_action}
+                  onClick={() => {
+                    if (canCheck) doType(ACTION_TYPES.CHECK);
+                    else if (canCall) doType(ACTION_TYPES.CALL);
+                  }}
+                  className="act call"
+                >
+                  {toCall > 0 ? `Call ${formatMoney(toCall)}` : "Check"}
+                </button>
+                <button
+                  disabled={busy || !canAllIn || !session.awaiting_human_action}
+                  onClick={() => doType(ACTION_TYPES.ALL_IN)}
+                  className="act shove"
+                >
+                  All-In
+                </button>
+              </div>
+              <div className="raise-strip">
+                <input
+                  type="range"
+                  min={betMin}
+                  max={betMax}
+                  step={1}
+                  value={raiseTarget}
+                  disabled={busy || !betActions.length || !session.awaiting_human_action}
+                  onChange={(e) => setRaiseTarget(Number(e.target.value))}
+                />
+                <span>{formatMoney(raiseTarget)}</span>
+                <button
+                  disabled={busy || !betActions.length || !session.awaiting_human_action}
+                  onClick={sendClosestBet}
+                  className="act raise"
+                >
+                  Bet / Raise
+                </button>
               </div>
             </div>
+          </main>
 
-            <div>
-              <h3 className="text-sm font-semibold mb-2">Event Log</h3>
-              <div className="h-56 rounded-xl bg-slate-800/60 px-3 py-2 font-mono text-xs text-slate-300 overflow-auto scroll-thin space-y-1">
-                {log.map((l, idx) => (
-                  <div key={idx}>{l}</div>
-                ))}
-                {log.length === 0 && <div className="text-slate-500">No events yet.</div>}
+          <aside className="side-panel right">
+            <div className="panel-block">
+              <h3>Action History</h3>
+              <div className="history-line">{actionHistory.length ? actionHistory.join(" ") : "-"}</div>
+            </div>
+            <div className="panel-block grow">
+              <h3>Engine Log</h3>
+              <div className="log-box">
+                {eventLog.length ? eventLog.map((line, idx) => <div key={`${idx}-${line.slice(0, 8)}`}>{line}</div>) : "-"}
               </div>
             </div>
-          </div>
+          </aside>
         </div>
       </div>
     </div>
