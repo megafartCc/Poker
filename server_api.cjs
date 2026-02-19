@@ -115,6 +115,25 @@ function cardDeck(count) {
   return cards;
 }
 
+function boardTexture(board) {
+  if (!board || board.length === 0) return "unknown";
+  const ranks = board.map((c) => c[0]);
+  const suits = board.map((c) => c[1]);
+  const uniqueSuits = new Set(suits).size;
+  const rankCounts = ranks.reduce((m, r) => {
+    m[r] = (m[r] || 0) + 1;
+    return m;
+  }, {});
+  const paired = Object.values(rankCounts).some((v) => v >= 2);
+  const high = ranks.some((r) => ["A", "K", "Q"].includes(r.toUpperCase()));
+  if (uniqueSuits === 1) return "monotone";
+  if (uniqueSuits === 2) return "two-tone";
+  if (paired && high) return "paired_high";
+  if (paired) return "paired";
+  if (high) return "high_rainbow";
+  return "rainbow";
+}
+
 function discretizeRatio(numer, denom, scale, maxBucket) {
   const ratio = denom <= 1e-9 ? 0 : numer / denom;
   return Math.max(0, Math.min(maxBucket, Math.floor(ratio * scale + 1e-9)));
@@ -425,7 +444,14 @@ function botPlay(sess) {
     const legal = legalActions(s);
     const infoset = infosetKey(s, sess.street);
     const act = sampleActionFromPolicy(legal, infoset, policy);
-    actions.push({ seat: botSeat, bucket_id: botSeat === 0 ? s.bucket_p0 : s.bucket_p1, action: { type: actionNames[act] } });
+    actions.push({
+      seat: botSeat,
+      street: sess.street,
+      bucket_id: botSeat === 0 ? s.bucket_p0 : s.bucket_p1,
+      hand_strength: botSeat === 0 ? s.hs_p0 : s.hs_p1,
+      board_class: boardTexture(sess.board),
+      action: { type: actionNames[act] },
+    });
     applyAction(s, act);
   }
   let result = null;

@@ -107,9 +107,12 @@ function App() {
       addLog(`${p.result.label} (${formatMoney(p.result.human_payoff)})`);
     }
     if (p.bot_actions?.length) {
-      p.bot_actions.forEach((ba) =>
-        addLog(`BOT seat ${ba.seat}: ${ba.action?.type ?? ""} (bucket ${ba.bucket_id ?? "?"})`)
-      );
+      p.bot_actions.forEach((ba) => {
+        const hs = ba.hand_strength != null ? ba.hand_strength.toFixed(3) : "n/a";
+        addLog(
+          `BOT seat ${ba.seat} | street=${ba.street} | board=${ba.board_class ?? "?"} | bucket=${ba.bucket_id ?? "?"} | hs=${hs} | action=${ba.action?.type ?? ""}`
+        );
+      });
     }
   };
 
