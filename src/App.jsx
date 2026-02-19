@@ -11,6 +11,7 @@ const defaultSession = {
   terminal: false,
   result: null,
   score: { wins: 0, losses: 0, ties: 0, net: 0 },
+  seats: 2,
 };
 
 const Card = ({ card, hidden }) => {
@@ -80,6 +81,7 @@ function App() {
   const { request } = useApi();
   const [health, setHealth] = useState("unknown");
   const [humanSeat, setHumanSeat] = useState(0);
+  const [seats, setSeats] = useState(2);
   const [session, setSession] = useState(defaultSession);
   const [log, setLog] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -121,9 +123,9 @@ function App() {
     try {
       const p = await request("/api/new_game", {
         method: "POST",
-        body: { human_seat: humanSeat },
+        body: { human_seat: humanSeat, seats },
       });
-      setLog([`Session started. You are seat ${humanSeat}.`]);
+      setLog([`Session started. You are seat ${humanSeat} / ${seats} seats.`]);
       applyPayload(p);
     } catch (err) {
       addLog(`ERROR: ${err.message}`);
@@ -165,10 +167,12 @@ function App() {
     }
   };
 
-  const stacks = useMemo(() => session.state?.stacks || [], [session.state]);
+  const stacks = useMemo(() => session.state?.stacks || session.state?.stacks || session.state?.stacks || session.state?.stacks || session.state?.stacks || [], [session.state]);
   const board = session.state?.board || [];
   const hero = session.state?.your_hand || [];
   const actions = session.awaiting_human_action ? session.legal_actions || [] : [];
+  const street = session.state?.street ?? "-";
+  const toCall = session.state?.to_call;
 
   return (
     <div className="min-h-screen px-4 py-6 md:px-8 lg:px-12">
@@ -176,7 +180,7 @@ function App() {
         <header className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-display font-bold tracking-tight">Poker Arena</h1>
-            <p className="text-slate-400">1v1 heads-up vs your trained bot</p>
+            <p className="text-slate-400">Full-game heads-up beta (preflop + blinds)</p>
           </div>
           <div className="flex items-center gap-3 text-sm">
             <span
@@ -209,8 +213,18 @@ function App() {
                 onChange={(e) => setHumanSeat(Number(e.target.value))}
                 disabled={busy}
               >
-                <option value={0}>Seat 0 (acts second)</option>
-                <option value={1}>Seat 1 (acts first)</option>
+                <option value={0}>Seat 0 (SB preflop, acts first)</option>
+                <option value={1}>Seat 1 (BB preflop)</option>
+              </select>
+              <label className="text-xs uppercase tracking-wide text-slate-400">Seats</label>
+              <select
+                className="w-full bg-slate-800/80 border border-white/5 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                value={seats}
+                onChange={(e) => setSeats(Number(e.target.value))}
+                disabled={busy}
+              >
+                <option value={2}>2 (HU)</option>
+                <option value={6}>6 (coming soon UI)</option>
               </select>
               <button
                 onClick={startSession}
@@ -233,11 +247,11 @@ function App() {
               <div className="font-mono text-slate-200 break-all">{session.session_id || "-"}</div>
               <div className="grid grid-cols-2 gap-y-1 text-slate-300">
                 <span className="text-slate-400">Street</span>
-                <span>{session.state?.street ?? "-"}</span>
+                <span>{street}</span>
                 <span className="text-slate-400">Pot</span>
                 <span>{formatMoney(session.state?.pot)}</span>
                 <span className="text-slate-400">To Call</span>
-                <span>{formatMoney(session.state?.to_call)}</span>
+                <span>{formatMoney(toCall)}</span>
                 <span className="text-slate-400">Stacks</span>
                 <span className="font-mono">{JSON.stringify(stacks)}</span>
               </div>

@@ -9,6 +9,7 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { solveRealtime } = require("./solver_bridge");
 
 // Config
 const PORT = Number(process.env.PORT || 8787);
@@ -333,7 +334,7 @@ app.post("/api/new_hand", (req, res) => {
   res.json(buildPayload(next));
 });
 
-app.post("/api/action", (req, res) => {
+app.post("/api/action", async (req, res) => {
   const sess = sessions.get(req.body?.session_id);
   if (!sess) return res.status(400).json({ ok: false, error: "bad session" });
   if (sess.state.terminal) return res.json(buildPayload(sess, [], true, null));
@@ -348,11 +349,50 @@ app.post("/api/action", (req, res) => {
   const actions = [];
   // bot acts until human turn or terminal or street change
   while (!sess.state.terminal && sess.state.toAct !== sess.humanSeat) {
-    actions.push(botAct(sess));
+    let botStep = null;
+    if (sess.state.streetIdx > 0) {
+      try {
+        const rt = await solveRealtime({
+          seats: sess.seats || 2,
+          heroSeat: 1 - sess.humanSeat,
+          street: sess.state.street,
+          buckets: BUCKETS_PATH,
+          blueprint: BLUEPRINT_PATH,
+          thinkMs: Number(process.env.RT_MS || 800),
+        });
+        const legalBot = legalActions(sess.state);
+        let chosen = legalBot[0];
+        const name = (rt.chosen || "").toLowerCase();
+        // crude mapping
+        const preferred = {
+          fold: A.FOLD,
+          check: A.CHECK,
+          call: A.CALL,
+          bet: A.BET_HALF,
+          raise: A.RAISE_HALF,
+          all_in: A.ALL_IN,
+        };
+        if (preferred[name] !== undefined && legalBot.includes(preferred[name])) {
+          chosen = preferred[name];
+        }
+        applyAction(sess.state, chosen);
+        botStep = {
+          seat: 1 - sess.humanSeat,
+          street: sess.state.street,
+          action: { type: actionNames[chosen], mix: rt.probs },
+          pot: Number(sess.state.pot.toFixed(2)),
+          to_call: Number(Math.max(0, sess.state.currentBet - sess.state.commit[sess.state.toAct]).toFixed(2)),
+        };
+      } catch (_err) {
+        botStep = botAct(sess);
+      }
+    } else {
+      botStep = botAct(sess);
+    }
+    actions.push(botStep);
     if (!sess.state.terminal && needsStreetAdvance(sess) && sess.state.streetIdx < 3) {
       advanceStreet(sess);
     }
-    // break if back to human with a decision
     if (!sess.state.terminal && sess.state.toAct === sess.humanSeat) break;
     if (sess.state.terminal) break;
   }
