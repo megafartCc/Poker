@@ -9,7 +9,7 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { solveRealtime } = require("./solver_bridge");
+const { solveRealtime } = require("./solver_bridge.cjs");
 
 // Config
 const PORT = Number(process.env.PORT || 8787);
