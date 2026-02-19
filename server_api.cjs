@@ -450,6 +450,9 @@ function botPlay(sess) {
       bucket_id: botSeat === 0 ? s.bucket_p0 : s.bucket_p1,
       hand_strength: botSeat === 0 ? s.hs_p0 : s.hs_p1,
       board_class: boardTexture(sess.board),
+      pot: Number(s.pot.toFixed(2)),
+      to_call: Number(Math.max(0, s.currentBet - s.committed[s.playerToAct]).toFixed(2)),
+      spr: Number((s.stack[s.playerToAct] / Math.max(1e-6, s.pot)).toFixed(2)),
       action: { type: actionNames[act] },
     });
     applyAction(s, act);

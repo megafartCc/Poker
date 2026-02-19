@@ -110,7 +110,7 @@ function App() {
       p.bot_actions.forEach((ba) => {
         const hs = ba.hand_strength != null ? ba.hand_strength.toFixed(3) : "n/a";
         addLog(
-          `BOT seat ${ba.seat} | street=${ba.street} | board=${ba.board_class ?? "?"} | bucket=${ba.bucket_id ?? "?"} | hs=${hs} | action=${ba.action?.type ?? ""}`
+          `BOT seat ${ba.seat} | street=${ba.street} | board=${ba.board_class ?? "?"} | bucket=${ba.bucket_id ?? "?"} | hs=${hs} | pot=${ba.pot ?? "?"} | to_call=${ba.to_call ?? "?"} | spr=${ba.spr ?? "?"} | action=${ba.action?.type ?? ""}`
         );
       });
     }
