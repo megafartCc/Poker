@@ -349,6 +349,16 @@ function sampleActionFromPolicy(legal, infoset, policyMap) {
   return legal[legal.length - 1];
 }
 
+function removeDominatedFolds(legal, state, equity) {
+  const toCall = Math.max(0, state.currentBet - state.committed[state.playerToAct]);
+  if (toCall <= 1e-9) return legal;
+  const required = toCall / (state.pot + toCall);
+  if (equity > required + 0.02) {
+    return legal.filter((a) => a !== kAction.Fold);
+  }
+  return legal;
+}
+
 // ---------- Session handling ----------
 const sessions = new Map();
 
@@ -441,7 +451,8 @@ function botPlay(sess) {
   const botSeat = 1 - sess.humanSeat;
   const actions = [];
   while (!s.terminal && s.playerToAct !== sess.humanSeat) {
-    const legal = legalActions(s);
+    const equityBot = botSeat === 0 ? s.hs_p0 : s.hs_p1;
+    const legal = removeDominatedFolds(legalActions(s), s, equityBot);
     const infoset = infosetKey(s, sess.street);
     const act = sampleActionFromPolicy(legal, infoset, policy);
     actions.push({
