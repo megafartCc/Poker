@@ -9,7 +9,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "node server.js",
+    "start": "node server.cjs",
     "postinstall": "npm run build"
   },
   "engines": {
