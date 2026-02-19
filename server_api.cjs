@@ -19,9 +19,9 @@ const path = require("path");
 // ---------- Config ----------
 const PORT = Number(process.env.PORT || 8787);
 const BUCKETS_PATH = process.env.BUCKETS_PATH || "C:/out/PokerBot/data/blueprint_buckets_v1_200.json";
-const POLICY_FLOP = process.env.POLICY_FLOP || "C:/out/buckets/models/v1_2026-02-17/mccfr_flop.best.tsv";
-const POLICY_TURN = process.env.POLICY_TURN || "C:/out/buckets/models/v1_2026-02-17/mccfr_turn.best.tsv";
-const POLICY_RIVER = process.env.POLICY_RIVER || "C:/out/buckets/models/v1_2026-02-17/mccfr_river.best.tsv";
+const POLICY_FLOP = process.env.POLICY_FLOP || "C:/out/buckets/models/v2_potguard/mccfr_flop.best.tsv";
+const POLICY_TURN = process.env.POLICY_TURN || "C:/out/buckets/models/v2_potguard/mccfr_turn.best.tsv";
+const POLICY_RIVER = process.env.POLICY_RIVER || "C:/out/buckets/models/v2_potguard/mccfr_river.best.tsv";
 const MAX_RAISES = Number(process.env.MAX_RAISES || 2);
 
 const kAction = {
