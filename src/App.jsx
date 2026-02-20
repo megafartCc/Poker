@@ -158,10 +158,12 @@ function App() {
     if (Array.isArray(p.bot_actions)) {
       for (const ba of p.bot_actions) {
         const hs = ba.hand_strength != null ? Number(ba.hand_strength).toFixed(3) : "n/a";
-        const bucket = ba.bucket_id != null ? ba.bucket_id : "?";
+        const bucketBand = ba.bucket_id != null ? ba.bucket_id : "?";
+        const bucketHrId = ba.bucket_hr_id != null ? ba.bucket_hr_id : "?";
+        const bucketHrCount = ba.bucket_hr_count != null ? ba.bucket_hr_count : "?";
         const key = ba.infoset_key || ba.prior_key || "-";
         addLog(
-          `[BOT] ${ba.street || "-"} ${ba.action?.type || "-"} | hs=${hs} | bucket=${bucket} | key=${key} | pot=${formatMoney(ba.pot)}`
+          `[BOT] ${ba.street || "-"} ${ba.action?.type || "-"} | hs=${hs} | band10=${bucketBand} | bucket_hr=${bucketHrId}/${bucketHrCount} | key=${key} | pot=${formatMoney(ba.pot)}`
         );
       }
     }
