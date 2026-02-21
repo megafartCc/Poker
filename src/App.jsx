@@ -145,16 +145,30 @@ function App() {
       addLog(`[RESULT] ${p.result.label} ${formatMoney(p.result.human_payoff)}`);
     }
     const legal = p.legal_actions || [];
-    const betLike = legal.filter((a) =>
+    const raiseLike = legal.filter((a) =>
       [
         ACTION_TYPES.BET_HALF_POT,
         ACTION_TYPES.BET_POT,
         ACTION_TYPES.RAISE_HALF_POT,
         ACTION_TYPES.RAISE_POT,
-        ACTION_TYPES.ALL_IN,
       ].includes(a.type)
     );
-    if (betLike.length) setRaiseTarget(Number(betLike[0].size || 0));
+    if (raiseLike.length) {
+      const sizes = raiseLike
+        .map((a) => Number(a.size || 0))
+        .filter((v) => Number.isFinite(v) && v > 0)
+        .sort((a, b) => a - b);
+      const min = sizes[0];
+      const max = sizes[sizes.length - 1];
+      setRaiseTarget((prev) => {
+        if (Number.isFinite(prev) && prev >= min && prev <= max) {
+          return prev;
+        }
+        return min;
+      });
+    } else {
+      setRaiseTarget(0);
+    }
     if (Array.isArray(p.bot_actions)) {
       for (const ba of p.bot_actions) {
         const hs = ba.hand_strength != null ? Number(ba.hand_strength).toFixed(3) : "n/a";
@@ -259,7 +273,6 @@ function App() {
           ACTION_TYPES.BET_POT,
           ACTION_TYPES.RAISE_HALF_POT,
           ACTION_TYPES.RAISE_POT,
-          ACTION_TYPES.ALL_IN,
         ].includes(a.type)
       );
   }, [actions]);
