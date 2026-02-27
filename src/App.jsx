@@ -305,8 +305,8 @@ function App() {
       <div className="app-wrap">
         <header className="topbar">
           <div>
-            <div className="eyebrow">Heads-Up Engine Test</div>
-            <h1 className="title">Poker Arena Pro Table</h1>
+            <div className="eyebrow">Plarbius V2</div>
+            <h1 className="title">Superhuman Blueprint API</h1>
           </div>
           <div className={`health-pill ${health === "up" ? "online" : "offline"}`}>
             <span className="dot" />
