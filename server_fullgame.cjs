@@ -19,7 +19,7 @@ const {
   texture: infosetTexture,
   buildInfosetKey,
   hsBand,
-} = require("./lib/infoset_v1.cjs");
+} = require("./lib/infoset_v2.cjs");
 
 // Config
 const PORT = Number(process.env.PORT || 8787);
@@ -30,14 +30,18 @@ const SMALL_BLIND = Number(process.env.SMALL_BLIND || 1);
 const BIG_BLIND = Number(process.env.BIG_BLIND || 2);
 const MAX_RAISES = Number(process.env.MAX_RAISES || 3);
 const EQUITY_TRIALS = Number(process.env.EQUITY_TRIALS || 600);
-const BLUEPRINT_V1_PATH = process.env.BLUEPRINT_V1_PATH || process.env.POSTFLOP_PRIOR_PATH || path.join(__dirname, "data", "postflop_blueprint_v1.json");
+const EQUITY_CACHE_MAX = Math.max(2000, Number(process.env.EQUITY_CACHE_MAX || 50000));
+const BLUEPRINT_V1_PATH =
+  process.env.BLUEPRINT_V1_PATH ||
+  process.env.POSTFLOP_PRIOR_PATH ||
+  path.join(__dirname, "data", "postflop_blueprint_v2.json");
 const BLUEPRINT_V1_EV_BLEND = Number(process.env.BLUEPRINT_V1_EV_BLEND || process.env.POSTFLOP_PRIOR_BLEND || 0.4);
 const BLUEPRINT_V1_PRIOR_PROB_FLOOR = Number(process.env.BLUEPRINT_V1_PRIOR_PROB_FLOOR || 1e-4);
-const RT_SUBGAME_MS = Math.max(200, Math.min(800, Number(process.env.RT_SUBGAME_MS || 300)));
+const RT_SUBGAME_MS = Math.max(200, Math.min(800, Number(process.env.RT_SUBGAME_MS || 500)));
 const RT_SUBGAME_DEPTH = Math.max(2, Math.min(8, Number(process.env.RT_SUBGAME_DEPTH || 5)));
 const RT_TRIGGER_POT = Number(process.env.RT_TRIGGER_POT || 60);
 const RT_TRIGGER_SPR = Number(process.env.RT_TRIGGER_SPR || 4);
-const RT_PRIOR_WEIGHT = Math.max(0, Math.min(1, Number(process.env.RT_PRIOR_WEIGHT || 0.65)));
+const RT_PRIOR_WEIGHT = Math.max(0, Math.min(1, Number(process.env.RT_PRIOR_WEIGHT || 0.58)));
 const ENABLE_BLUEPRINT_V1_PRIOR = String(process.env.ENABLE_BLUEPRINT_V1_PRIOR || process.env.ENABLE_JS_POSTFLOP_PRIOR || "1") !== "0";
 const ENABLE_RT = String(process.env.ENABLE_RT || "1") !== "0";
 const SEATS = Number(process.env.SEATS || 2); // allow HU for now
@@ -64,6 +68,8 @@ const ENGINE_DIAG = {
   postflop_prior_misses: 0,
   rt_subgame_hits: 0,
   rt_subgame_fallbacks: 0,
+  equity_cache_hits: 0,
+  equity_cache_misses: 0,
 };
 
 function warnDiag(kind, msg) {
@@ -111,11 +117,11 @@ function loadPostflopPrior(p) {
 const postflopPrior = ENABLE_BLUEPRINT_V1_PRIOR
   ? loadPostflopPrior(BLUEPRINT_V1_PATH)
   : {
-      enabled: false,
-      path: BLUEPRINT_V1_PATH,
-      map: new Map(),
-      meta: { disabled_by_default: true, reason: "ENABLE_BLUEPRINT_V1_PRIOR=0" },
-    };
+    enabled: false,
+    path: BLUEPRINT_V1_PATH,
+    map: new Map(),
+    meta: { disabled_by_default: true, reason: "ENABLE_BLUEPRINT_V1_PRIOR=0" },
+  };
 
 // Card helpers (index 0..51)
 const ranks = "23456789TJQKA";
@@ -191,6 +197,31 @@ function boardTexture(board) {
   return { paired, monotone, connected, twoTone, wet, dry };
 }
 
+const equityCache = new Map();
+
+function canonicalCardsKey(cards) {
+  return (cards || []).slice().sort().join(",");
+}
+
+function equityCacheKey(heroHand, board, trials) {
+  return `${canonicalCardsKey(heroHand)}|${canonicalCardsKey(board)}|t=${trials}`;
+}
+
+function equityCacheRead(key) {
+  const hit = equityCache.get(key);
+  if (!hit) return null;
+  equityCache.delete(key);
+  equityCache.set(key, hit);
+  return hit;
+}
+
+function equityCacheWrite(key, value) {
+  equityCache.set(key, value);
+  if (equityCache.size <= EQUITY_CACHE_MAX) return;
+  const old = equityCache.keys().next().value;
+  if (old != null) equityCache.delete(old);
+}
+
 // Real equity via Monte Carlo vs specific opponent range (here: exact opponent hand if known, else random)
 function evalStrength(heroHand, board, oppHand = null, trials = 300) {
   const deck = [];
@@ -205,13 +236,13 @@ function evalStrength(heroHand, board, oppHand = null, trials = 300) {
     const opp = oppHand
       ? [...oppHand]
       : (() => {
-          const pool = [...avail];
-          const i1 = Math.floor(Math.random() * pool.length);
-          const c1 = pool.splice(i1, 1)[0];
-          const i2 = Math.floor(Math.random() * pool.length);
-          const c2 = pool.splice(i2, 1)[0];
-          return [c1, c2];
-        })();
+        const pool = [...avail];
+        const i1 = Math.floor(Math.random() * pool.length);
+        const c1 = pool.splice(i1, 1)[0];
+        const i2 = Math.floor(Math.random() * pool.length);
+        const c2 = pool.splice(i2, 1)[0];
+        return [c1, c2];
+      })();
     const need = 5 - board.length;
     const pool = avail.filter((c) => !opp.includes(c));
     const boardFill = [...board];
@@ -228,6 +259,20 @@ function evalStrength(heroHand, board, oppHand = null, trials = 300) {
   const eq = total ? (wins + 0.5 * ties) / total : 0.5;
   const err = total < 20 ? "low_samples" : null;
   return { eq, samples: total, err };
+}
+
+function evalStrengthCached(heroHand, board, oppHand = null, trials = 300) {
+  if (oppHand && oppHand.length) return evalStrength(heroHand, board, oppHand, trials);
+  const key = equityCacheKey(heroHand, board, trials);
+  const hit = equityCacheRead(key);
+  if (hit) {
+    ENGINE_DIAG.equity_cache_hits += 1;
+    return { ...hit, cached: true };
+  }
+  ENGINE_DIAG.equity_cache_misses += 1;
+  const out = evalStrength(heroHand, board, oppHand, trials);
+  equityCacheWrite(key, out);
+  return { ...out, cached: false };
 }
 
 function rankValue(card) {
@@ -335,6 +380,7 @@ function updateRangeBeliefFromAction(sess, seat, act, toCallBefore) {
   const beliefs = ensureRangeBeliefs(sess);
   const b = { ...beliefs[seat] };
   const facingBet = toCallBefore > 1e-9;
+  const pressure = toCallBefore / Math.max(1, Number(sess?.state?.pot || 1));
   const isAggressive =
     act === A.BET_HALF ||
     act === A.BET_POT ||
@@ -347,13 +393,23 @@ function updateRangeBeliefFromAction(sess, seat, act, toCallBefore) {
       b.medium += 0.04;
       b.strong -= 0.24;
     } else if (act === A.CALL || act === A.CHECK) {
-      b.weak -= 0.05;
-      b.medium += 0.12;
-      b.strong -= 0.07;
+      if (pressure >= 0.60) {
+        b.weak -= 0.10;
+        b.medium += 0.02;
+        b.strong += 0.08;
+      } else if (pressure >= 0.35) {
+        b.weak -= 0.07;
+        b.medium += 0.08;
+        b.strong -= 0.01;
+      } else {
+        b.weak -= 0.04;
+        b.medium += 0.12;
+        b.strong -= 0.08;
+      }
     } else if (isAggressive) {
       b.weak -= 0.16;
       b.medium -= 0.04;
-      b.strong += 0.20;
+      b.strong += pressure >= 0.50 ? 0.24 : 0.18;
     }
   } else {
     if (act === A.CHECK) {
@@ -361,9 +417,10 @@ function updateRangeBeliefFromAction(sess, seat, act, toCallBefore) {
       b.medium += 0.02;
       b.strong -= 0.12;
     } else if (isAggressive) {
-      b.weak -= 0.12;
-      b.medium -= 0.02;
-      b.strong += 0.14;
+      const large = act === A.BET_POT || act === A.RAISE_POT || act === A.ALL_IN;
+      b.weak -= large ? 0.16 : 0.10;
+      b.medium -= large ? 0.04 : 0.01;
+      b.strong += large ? 0.20 : 0.11;
     }
   }
   beliefs[seat] = normalizeRangeBelief(b);
@@ -372,8 +429,8 @@ function updateRangeBeliefFromAction(sess, seat, act, toCallBefore) {
 function conditionedEquity(baseEq, oppBelief) {
   const b = normalizeRangeBelief(oppBelief || initialRangeBelief());
   const pressure = (b.strong - b.weak);
-  const adj = -0.11 * pressure + 0.02 * (b.medium - 0.33);
-  return clamp(baseEq + adj, 0.001, 0.999);
+  const adj = -0.13 * pressure + 0.025 * (b.medium - 0.33);
+  return clamp(baseEq + adj, 0.003, 0.997);
 }
 
 function getOpponentPostflopProfile(sess, street) {
@@ -414,9 +471,22 @@ function pickActionByEV(legal, evByAct, tolerance = 0.12) {
   return nearBest[0] ?? legal[0];
 }
 
-function getPostflopPriorProbs(state, player, hs, texture) {
+function sampleActionByProbs(legal, probs) {
+  if (!legal.length) return null;
+  let sum = 0;
+  for (const a of legal) sum += Math.max(0, Number(probs?.[a] || 0));
+  if (sum <= 1e-12) return legal[Math.floor(Math.random() * legal.length)];
+  let r = Math.random() * sum;
+  for (const a of legal) {
+    r -= Math.max(0, Number(probs?.[a] || 0));
+    if (r <= 0) return a;
+  }
+  return legal[legal.length - 1];
+}
+
+function getPostflopPriorProbs(state, player, hs, texture, heroHand = null) {
   if (!postflopPrior.enabled || state.streetIdx <= 0 || BLUEPRINT_V1_EV_BLEND >= 1) return null;
-  const key = buildInfosetKey({ state, player, hs, tex: texture });
+  const key = buildInfosetKey({ state, player, hs, tex: texture, heroHand });
   const probs = postflopPrior.map.get(key);
   if (probs) {
     ENGINE_DIAG.postflop_prior_hits += 1;
@@ -574,6 +644,35 @@ function solveRtSubgameDCFR({
   };
 }
 
+function applyHardSafetyOverride(state, legal, chosen, hs, texture, spr) {
+  if (chosen == null) return chosen;
+  if (!legal.includes(chosen)) return legal[0] ?? chosen;
+  const toCall = Math.max(0, state.currentBet - state.commit[state.toAct]);
+  const reqEq = toCall > 1e-9 ? (toCall / Math.max(1, state.pot + toCall)) : 0;
+  const canCall = legal.includes(A.CALL);
+  const canCheck = legal.includes(A.CHECK);
+  const mediumHs = hs >= 0.38 && hs <= 0.62;
+
+  if (chosen === A.FOLD && toCall > 1e-9 && hs > reqEq + 0.02 && canCall) {
+    return A.CALL;
+  }
+  if (chosen === A.ALL_IN && spr > 6 && hs < 0.72) {
+    if (toCall > 1e-9 && canCall) return A.CALL;
+    if (toCall <= 1e-9 && canCheck) return A.CHECK;
+  }
+  if (mediumHs && spr > 2 && !texture?.wet) {
+    if (chosen === A.RAISE_POT || chosen === A.ALL_IN) {
+      if (toCall > 1e-9 && canCall) return A.CALL;
+      if (toCall <= 1e-9 && canCheck) return A.CHECK;
+    }
+    if (texture?.paired && (chosen === A.BET_POT || chosen === A.RAISE_HALF)) {
+      if (toCall > 1e-9 && canCall) return A.CALL;
+      if (toCall <= 1e-9 && canCheck) return A.CHECK;
+    }
+  }
+  return chosen;
+}
+
 function applyConservativeOverride(state, legal, chosen, hs, texture, spr) {
   if (chosen == null) return chosen;
   const toCall = Math.max(0, state.currentBet - state.commit[state.toAct]);
@@ -582,6 +681,7 @@ function applyConservativeOverride(state, legal, chosen, hs, texture, spr) {
   const canCheck = legal.includes(A.CHECK);
   const canBetHalf = legal.includes(A.BET_HALF);
   const canRaiseHalf = legal.includes(A.RAISE_HALF);
+  const mediumHs = hs >= 0.38 && hs <= 0.62;
 
   if (texture?.paired && hs > 0.40 && hs < 0.70 && spr > 2) {
     if (toCall > 1e-9 && canCall) return A.CALL;
@@ -591,6 +691,15 @@ function applyConservativeOverride(state, legal, chosen, hs, texture, spr) {
   if (chosen === A.ALL_IN && spr > 1.5 && hs < 0.70) {
     if (toCall > 1e-9 && canCall) return A.CALL;
     if (toCall <= 1e-9 && canCheck) return A.CHECK;
+  }
+  if (mediumHs && spr > 2) {
+    if (chosen === A.RAISE_POT || chosen === A.ALL_IN) {
+      if (toCall > 1e-9 && canCall) return A.CALL;
+      if (toCall <= 1e-9 && canCheck) return A.CHECK;
+    }
+    if (!texture?.wet && chosen === A.RAISE_HALF && toCall > 1e-9 && canCall) {
+      return A.CALL;
+    }
   }
 
   if (chosen === A.BET_POT || chosen === A.RAISE_POT) {
@@ -621,6 +730,7 @@ function applyConservativeOverride(state, legal, chosen, hs, texture, spr) {
   if ((chosen === A.BET_HALF || chosen === A.BET_POT) && toCall <= 1e-9 && spr > 3) {
     if (hs < 0.55 && canCheck) return A.CHECK;
     if (texture?.dry && hs < 0.60 && canCheck) return A.CHECK;
+    if (texture?.paired && mediumHs && canCheck) return A.CHECK;
   }
 
   return chosen;
@@ -760,8 +870,8 @@ function estimateEV(state, hs, act, texture = null, oppProfile = null, oppRangeB
   if (act === A.CALL) {
     const realize =
       texture?.wet ? 0.90 :
-      texture?.paired ? 0.95 :
-      0.93;
+        texture?.paired ? 0.95 :
+          0.93;
     const base = hs * potNow - (1 - hs) * toCall;
     return base * realize;
   }
@@ -771,16 +881,17 @@ function estimateEV(state, hs, act, texture = null, oppProfile = null, oppRangeB
   const oppReqEq = oppToCall / Math.max(1, potAfterPay + oppToCall);
   const betFrac = oppToCall / Math.max(1, potNow);
   const callProbBase =
-    0.84 - 0.95 * oppReqEq - 0.30 * Math.max(0, betFrac - 0.5);
-  let callProb = clamp(callProbBase, 0.15, 0.84);
-  let raiseProb = clamp(0.10 - 0.08 * oppReqEq, 0.02, 0.08);
+    0.82 - 0.90 * oppReqEq - 0.24 * Math.max(0, betFrac - 0.4);
+  let callProb = clamp(callProbBase, 0.18, 0.88);
+  let raiseProb = clamp(0.08 - 0.06 * oppReqEq, 0.01, 0.06);
   if (oppRangeBelief) {
     const b = normalizeRangeBelief(oppRangeBelief);
     const strengthTilt = b.strong - b.weak;
-    callProb = clamp(callProb + 0.18 * strengthTilt, 0.10, 0.90);
-    raiseProb = clamp(raiseProb + 0.10 * strengthTilt, 0.01, 0.24);
+    callProb = clamp(callProb + 0.22 * strengthTilt, 0.10, 0.92);
+    raiseProb = clamp(raiseProb + 0.06 * strengthTilt, 0.01, 0.18);
   }
-  let foldProb = Math.max(0, 1 - callProb - raiseProb);
+  let foldProb = clamp(1 - callProb - raiseProb, 0.08, 0.70);
+  callProb = Math.max(0.03, 1 - foldProb - raiseProb);
   if (oppProfile && oppProfile.samples >= 8) {
     foldProb = clamp(0.6 * foldProb + 0.4 * oppProfile.foldRate, 0.06, 0.85);
     raiseProb = clamp(0.7 * raiseProb + 0.3 * oppProfile.raiseRate, 0.01, 0.20);
@@ -798,11 +909,17 @@ function estimateEV(state, hs, act, texture = null, oppProfile = null, oppRangeB
   const evIfRaise = evIfCall - 0.35 * pay;
 
   let penalty = 0;
+  const mediumHs = hs >= 0.38 && hs <= 0.62;
   if (hs >= 0.4 && hs <= 0.65 && spr > 2) penalty += 0.16 * pay;
   if (texture?.paired && hs <= 0.65 && spr > 2) penalty += 0.12 * pay;
   if (texture?.dry && (act === A.BET_POT || act === A.RAISE_POT)) penalty += 0.18 * pay;
   if (texture?.wet && hs >= 0.62) penalty -= 0.06 * pay;
   if (act === A.ALL_IN && spr > 6) penalty += 0.35 * pay;
+  if (mediumHs && spr > 2) {
+    if (act === A.RAISE_POT || act === A.BET_POT) penalty += 0.26 * pay;
+    if (act === A.ALL_IN) penalty += 0.44 * pay;
+    if (texture?.paired && (act === A.RAISE_HALF || act === A.BET_HALF)) penalty += 0.16 * pay;
+  }
   if (toCall <= 1e-9 && hs < 0.62 && spr > 2) {
     if (act === A.BET_HALF) penalty += 0.18 * pay;
     if (act === A.BET_POT || act === A.RAISE_POT) penalty += 0.34 * pay;
@@ -814,6 +931,11 @@ function estimateEV(state, hs, act, texture = null, oppProfile = null, oppRangeB
   if (oppProfile && oppProfile.samples >= 10 && hs < 0.58 && pay > 0) {
     if (oppProfile.foldRate < 0.28) penalty += 0.14 * pay;
     if (oppProfile.raiseRate > 0.18) penalty += 0.10 * pay;
+  }
+  if (oppProfile && oppProfile.samples >= 10 && hs < 0.62 && pay > 0) {
+    if (oppProfile.foldRate < 0.35 && (act === A.BET_POT || act === A.RAISE_POT || act === A.ALL_IN)) {
+      penalty += 0.20 * pay;
+    }
   }
 
   return foldProb * evIfFold + callProb * evIfCall + raiseProb * evIfRaise - penalty;
@@ -1007,129 +1129,60 @@ async function playToHuman(sess, actions) {
       continue;
     }
     if (sess.state.toAct === sess.humanSeat) break;
-    const action = botAct(sess, { seat: sess.state.toAct, apply: true });
+    const action = await botAct(sess, { seat: sess.state.toAct, apply: true });
     if (!action) break;
     actions.push(action);
   }
 }
 
-function botAct(sess, opts = {}) {
+async function botAct(sess, opts = {}) {
   const p = Number.isInteger(opts.seat) ? opts.seat : (1 - sess.humanSeat);
   const apply = opts.apply !== false;
   if (sess.state.toAct !== p || sess.state.terminal) return null;
   const toCall = Math.max(0, sess.state.currentBet - sess.state.commit[p]);
   const botHand = p === 0 ? sess.hero : sess.vill;
-  const oppSeat = 1 - p;
-  const oppRange = getRangeBelief(sess, oppSeat);
-  const eqRes = evalStrength(botHand, sess.board, null, EQUITY_TRIALS);
-  const hsRaw = eqRes.eq;
-  let hs = conditionedEquity(hsRaw, oppRange);
-  const extremeHs = hs <= 0.0001 || hs >= 0.9999;
-  const nonRiver = sess.board.length < 5;
-  if (extremeHs && nonRiver && eqRes.samples < 200) {
-    warnDiag("eval_suspect_warnings", `EVAL_SUSPECT hs=${hs} raw=${hsRaw} samples=${eqRes.samples} board=${boardDesc(sess.board)} hero=${botHand}`);
-  }
+
   let legal = legalActions(sess.state);
-  legal = removeDominatedFold(legal, toCall, sess.state.pot, hs, 0.02);
-  const spr = sprValue(sess.state, p);
-  if (spr > 2 && hs < 0.7) legal = legal.filter((a) => a !== A.ALL_IN);
-  if (spr > 10) legal = legal.filter((a) => a !== A.ALL_IN);
-  if (hs < 0.6) legal = legal.filter((a) => a !== A.BET_POT && a !== A.RAISE_POT);
+  if (legal.length === 0) legal = legalActions(sess.state);
 
-  const texture = boardTexture(sess.board);
-  const oppProfile = sess.state.streetIdx > 0 ? getOpponentPostflopProfile(sess, sess.state.street) : null;
-  if (sess.state.streetIdx > 0) {
-    if (texture.paired && hs > 0.40 && hs < 0.70 && spr > 2) {
-      legal = legal.filter((a) => a !== A.RAISE_HALF && a !== A.RAISE_POT && a !== A.BET_POT && a !== A.ALL_IN);
-    }
-    if (texture.dry) {
-      legal = legal.filter((a) => a !== A.BET_POT && a !== A.RAISE_POT);
-    }
-    if (toCall > 1e-9 && hs >= 0.4 && hs <= 0.65 && spr > 2 && !texture.wet) {
-      legal = legal.filter((a) => a !== A.RAISE_HALF && a !== A.RAISE_POT);
-    } else if (hs >= 0.4 && hs <= 0.65 && spr > 3) {
-      legal = legal.filter((a) => a !== A.RAISE_POT);
-    }
-    if (toCall <= 1e-9 && hs < 0.55 && spr > 4) {
-      legal = legal.filter((a) => a !== A.BET_POT && a !== A.RAISE_POT);
-    }
-  }
-  if (legal.length === 0) {
-    warnDiag("illegal_state_warnings", `EMPTY_LEGAL_SET street=${sess.state.street} hs=${hs.toFixed(3)} spr=${spr.toFixed(2)}`);
-    legal = legalActions(sess.state);
-  }
-
-  const evs = {};
-  const evByAct = new Map();
-  for (const act of legal) {
-    const ev = estimateEV(sess.state, hs, act, texture, oppProfile, oppRange);
-    evByAct.set(act, ev);
-    evs[actionNames[act]] = Number(ev.toFixed(3));
-  }
+  // Ask Plarbius GTO engine on port 8788 for the decision.
+  const payload = {
+    hero_seat: p,
+    street: sess.state.street,
+    pot: sess.state.pot,
+    to_call: toCall,
+    hero_stack: sess.state.stack[p],
+    hero_hand: botHand,
+    board: sess.board,
+    legal_actions: legal.map(a => ({ type: actionNames[a] })),
+    small_blind: SMALL_BLIND,
+    big_blind: BIG_BLIND,
+    start_stack: START_STACK,
+  };
 
   let bestAct = legal[0];
-  let priorKey = null;
-  let priorHit = false;
-  let priorBlendApplied = 0;
   let actionProbs = Array(actionNames.length).fill(0);
-  let rtSubgame = null;
-  const prior = sess.state.streetIdx > 0 ? getPostflopPriorProbs(sess.state, p, hs, texture) : null;
-  priorKey = prior?.key || null;
-  priorHit = Boolean(prior?.probs);
 
-  const runRt = shouldRunRtSubgame(sess, p, spr);
-  if (runRt) {
-    const rt = solveRtSubgameDCFR({
-      state: sess.state,
-      legal,
-      hs,
-      texture,
-      oppProfile,
-      oppRangeBelief: oppRange,
-      priorProbs: prior?.probs || null,
-      thinkMs: RT_SUBGAME_MS,
-      depthLimit: RT_SUBGAME_DEPTH,
+  try {
+    const res = await fetch("http://127.0.0.1:8788/api/resolve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     });
-    if (rt?.probs) {
-      ENGINE_DIAG.rt_subgame_hits += 1;
-      rtSubgame = rt;
-      actionProbs = rt.probs;
-      const policyScores = new Map(legal.map((a) => [a, actionProbs[a] || 0]));
-      bestAct = pickActionByEV(legal, policyScores, 0.000001) ?? legal[0];
-    } else {
-      ENGINE_DIAG.rt_subgame_fallbacks += 1;
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.decision && data.decision.action_type) {
+        let chosenActionName = data.decision.action_type;
+        // Match the best action from string to 'legal' enum.
+        const matchIndex = actionNames.findIndex(name => name === chosenActionName);
+        if (matchIndex >= 0 && legal.includes(matchIndex)) {
+          bestAct = matchIndex;
+          actionProbs = data.decision.action_probs || actionProbs;
+        }
+      }
     }
-  }
-
-  if (!rtSubgame) {
-    let scoreMap = evByAct;
-    if (sess.state.streetIdx > 0 && prior?.probs) {
-      priorBlendApplied = Math.max(0, Math.min(1, BLUEPRINT_V1_EV_BLEND));
-      scoreMap = blendEvWithPrior(legal, evByAct, prior.probs, priorBlendApplied);
-    }
-    bestAct = pickActionByEV(legal, scoreMap, sess.state.streetIdx > 0 ? 0.05 : 0.10) ?? legal[0];
-    actionProbs = scoresToActionProbs(legal, scoreMap, sess.state.streetIdx > 0 ? 0.30 : 0.40);
-  }
-
-  let preflopTier = null;
-  let oppThreeBetRate = null;
-  let oppCallRate = null;
-  let mixWeightsOut = null;
-  if (sess.state.streetIdx === 0 && legal.length > 0) {
-    const mix = buildPreflopMix(sess, botHand, legal, hs, toCall);
-    bestAct = sampleActionWithMix(legal, evByAct, mix.weights);
-    preflopTier = mix.tier;
-    oppThreeBetRate = Number(mix.profile.threeBetRate.toFixed(3));
-    oppCallRate = Number(mix.profile.callRate.toFixed(3));
-    mixWeightsOut = Object.fromEntries(
-      legal.map((a) => [actionNames[a], Number((mix.weights[a] || 0).toFixed(3))])
-    );
-    actionProbs = Array(actionNames.length).fill(0);
-    for (const a of legal) actionProbs[a] = Number((mix.weights[a] || 0).toFixed(6));
-  }
-
-  if (sess.state.streetIdx > 0) {
-    bestAct = applyConservativeOverride(sess.state, legal, bestAct, hs, texture, spr);
+  } catch (err) {
+    console.error("[botAct] Plarbius proxy failed:", err.message);
   }
 
   if (apply) {
@@ -1152,44 +1205,7 @@ function botAct(sess, opts = {}) {
     action_index: bestAct,
     pot: Number(sess.state.pot.toFixed(2)),
     to_call: Number(toCall.toFixed(2)),
-    bucket_id: sess.state.streetIdx > 0 ? hsBand(hs) : null,
-    bucket_source: sess.state.streetIdx > 0 ? "hs_band_v1" : "preflop",
-    infoset_key: priorKey,
-    hand_strength: Number(hs.toFixed(3)),
-    hand_strength_raw: Number(hsRaw.toFixed(3)),
-    board_class: sess.board.length ? boardDesc(sess.board) : "preflop",
-    spr: spr === Infinity ? null : Number(spr.toFixed(2)),
-    required_equity: sess.state.pot > 0 ? Number((toCall / (sess.state.pot + toCall || 1)).toFixed(3)) : 0,
-    legal_after_guard: legal.map((a) => actionNames[a]),
-    evs,
-    samples: eqRes.samples,
-    eval_error: eqRes.err || null,
     bot_hole_cards: botHand,
-    opp_mode: "conditioned_range",
-    range_belief: normalizeRangeBelief(oppRange),
-    preflop_tier: preflopTier,
-    opp_3bet_rate: oppThreeBetRate,
-    opp_call_rate: oppCallRate,
-    mix_weights: mixWeightsOut,
-    board_texture: texture,
-    opp_profile: oppProfile,
-    prior_key: priorKey,
-    prior_hit: priorHit,
-    prior_blend: Number(priorBlendApplied.toFixed(3)),
-    rt_subgame: rtSubgame
-      ? {
-          used: true,
-          think_ms: RT_SUBGAME_MS,
-          elapsed_ms: rtSubgame.elapsed_ms,
-          iterations: rtSubgame.iterations,
-          depth: RT_SUBGAME_DEPTH,
-        }
-      : {
-          used: false,
-          triggered: runRt,
-          think_ms: RT_SUBGAME_MS,
-          depth: RT_SUBGAME_DEPTH,
-        },
   };
 }
 
@@ -1208,10 +1224,10 @@ function buildPayload(sess, botActions = [], terminal = false, result = null) {
   const awaitingHuman = !terminal && sess.state.toAct === sess.humanSeat && !sess.state.terminal;
   const legalDetail = awaitingHuman
     ? legalActions(sess.state).map((a) => ({
-        type: actionNames[a],
-        size: Number(actionTarget(sess.state, a).toFixed(2)),
-        index: a,
-      }))
+      type: actionNames[a],
+      size: Number(actionTarget(sess.state, a).toFixed(2)),
+      index: a,
+    }))
     : [];
   const stateSnapshot = {
     street: sess.state.street,
@@ -1234,11 +1250,11 @@ function buildPayload(sess, botActions = [], terminal = false, result = null) {
     state: stateSnapshot,
     showdown: terminal
       ? {
-          human_hand: humanHand,
-          bot_hand: botHand,
-          board: boardNow,
-          winner: result?.winner ?? sess.state.winner,
-        }
+        human_hand: humanHand,
+        bot_hand: botHand,
+        board: boardNow,
+        winner: result?.winner ?? sess.state.winner,
+      }
       : null,
     terminal,
     result,
@@ -1295,14 +1311,14 @@ app.post("/api/diag/reset", (_req, res) => {
   res.json({ ok: true, diag: ENGINE_DIAG });
 });
 
-app.post("/api/mirror_action", (req, res) => {
+app.post("/api/mirror_action", async (req, res) => {
   const sess = sessions.get(req.body?.session_id);
   if (!sess) return res.status(400).json({ ok: false, error: "bad session" });
   if (sess.state.terminal) {
     return res.json({ ok: true, terminal: true, action_index: -1 });
   }
   const seat = Number.isInteger(req.body?.seat) ? Number(req.body.seat) : sess.state.toAct;
-  const preview = botAct(sess, { seat, apply: false });
+  const preview = await botAct(sess, { seat, apply: false });
   if (!preview) return res.status(400).json({ ok: false, error: "cannot_preview_action" });
   const legal = legalActions(sess.state);
   const localIdx = legal.findIndex((a) => a === preview.action_index);
