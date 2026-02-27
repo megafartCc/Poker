@@ -31,7 +31,7 @@
     "postinstall": "npm run build"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20.19.0"
   },
   "dependencies": {
     "@letele/playing-cards": "^0.1.0",
