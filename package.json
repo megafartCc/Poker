@@ -9,7 +9,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "node server.cjs",
+    "start": "node start.cjs",
     "gto:login": "node ./scripts/gto_login.cjs",
     "gto:login:env": "powershell -ExecutionPolicy Bypass -File ./scripts/start_gto_login.ps1",
     "gto:probe": "node ./scripts/gto_site_probe.cjs",
