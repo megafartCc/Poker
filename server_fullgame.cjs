@@ -22,7 +22,7 @@ const {
 } = require("./lib/infoset_v2.cjs");
 
 // Config
-const PORT = Number(process.env.PORT || 8787);
+const PORT = Number(process.env.PORT_API || process.env.PORT || 8787);
 const BUCKETS_PATH = process.env.BUCKETS_PATH || "C:/out/PokerBot/data/blueprint_buckets_v1_200.json";
 const BLUEPRINT_PATH = process.env.BLUEPRINT_PATH || "C:/out/Poker/data/cpp_fullgame_blueprint_v1.strategy.tsv";
 const START_STACK = Number(process.env.START_STACK || 200);
@@ -80,12 +80,7 @@ function warnDiag(kind, msg) {
 // Bucket helpers
 function readJson(p) { return JSON.parse(fs.readFileSync(p, "utf8")); }
 function loadBuckets() {
-  const j = readJson(BUCKETS_PATH);
-  const res = { flop: 200, turn: 200, river: 200 };
-  ["flop", "turn", "river"].forEach((s) => {
-    res[s] = (j.streets?.[s]?.centroids || []).length || res[s];
-  });
-  return res;
+  return { flop: 200, turn: 200, river: 200 };
 }
 const bucketCounts = loadBuckets();
 function sampleBucket(street) {
